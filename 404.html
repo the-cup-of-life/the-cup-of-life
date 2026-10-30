@@ -1,0 +1,18 @@
+<!DOCTYPE html><html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loading The Cup of Life...</title>
+  <script>
+    const base = "/the-cup-of-life";
+    const path = location.pathname;
+    const query = location.search;
+    const hash = location.hash;sessionStorage.setItem("tcol-route", path + query + hash);
+location.replace(base + "/");
+
+  </script>
+</head>
+<body>
+  Loading The Cup of Life...
+</body>
+</html>
