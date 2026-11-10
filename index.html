@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- TCOL multiplayer patch: 2.2 | clearer BLITZ create/join flow, robust room-code display, and Firebase/WebRTC diagnostics -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -2030,10 +2031,10 @@ body{overflow-x:hidden}
         <button id="mp-mode-matchtime" class="col-modal-btn" onclick="selectMpMode('matchtime')">DRAFT TEAM MATCHTIME</button>
         <button id="mp-mode-onesim" class="col-modal-btn" onclick="selectMpMode('onesim')">ONE-ON-ONE SIM</button>
       </div>
-      <button class="col-modal-btn" onclick="openBlitzMultiplayerCreate()">BLITZ · CREATE 4V4 ROOM</button>
-      <button class="col-modal-btn" onclick="openBlitzMultiplayerJoin()">BLITZ · JOIN 4V4 ROOM</button>
-      <button class="col-modal-btn primary" onclick="openCreateRoomDialog()">CREATE ROOM</button>
-      <button class="col-modal-btn" onclick="openJoinGame()">JOIN GAME</button>
+      <button class="col-modal-btn" onclick="openBlitzMultiplayerCreate()">CREATE BLITZ 4V4 ROOM</button>
+      <button class="col-modal-btn" onclick="openBlitzMultiplayerJoin()">JOIN BLITZ 4V4 ROOM (CODE)</button>
+      <button class="col-modal-btn primary" onclick="openCreateRoomDialog()">CREATE DRAFT ROOM</button>
+      <button class="col-modal-btn" onclick="openJoinGame()">BROWSE DRAFT ROOMS</button>
       <button class="col-modal-btn secondary" onclick="backToOpponentChoice()">BACK</button>
     </div>
   </div>
@@ -2172,10 +2173,16 @@ body{overflow-x:hidden}
 <!-- MULTIPLAYER WAITING SCREEN -->
 <div id="mp-waiting-screen" style="display:none; position:fixed; inset:0; background:radial-gradient(circle, #1a2a4a, #0a0e1a); z-index:2000; flex-direction:column; justify-content:center; align-items:center;">
     <h1 style="color:#ff0055; letter-spacing:2px; text-align: center; margin-bottom: 5px;">WAITING FOR OPPONENT</h1>
+    <div style="font:800 10px/1.4 Arial,sans-serif;letter-spacing:2px;color:#69d9ff;margin:4px 0 10px;">TCOL MULTIPLAYER BUILD 2.2</div>
     <div id="display-room-name" style="color:#b8ff59;font-size:22px;font-weight:900;letter-spacing:1px;margin:14px 12px 8px;overflow-wrap:anywhere;">YOUR ROOM</div>
     <div id="display-room-privacy" style="color:#d5e0e2;font-size:12px;margin-bottom:12px;">PUBLIC ROOM</div>
-    <div style="color:#aab8bd;font:12px/1.5 Arial,sans-serif;max-width:320px;padding:0 18px;margin-bottom:34px;">Your room is listed in JOIN GAME. Keep this screen open while another player joins.</div>
-    <div id="display-room-code" style="display:none;">XXXXX</div>
+    <div id="display-room-help" style="color:#aab8bd;font:12px/1.5 Arial,sans-serif;max-width:320px;padding:0 18px;margin-bottom:34px;">Your friend must enter the room code from VS PLAYER → JOIN BLITZ 4V4 ROOM (CODE). Keep this screen open.</div>
+    <div id="display-room-code-wrap" style="display:block;width:min(88vw,390px);margin:10px auto 18px;padding:18px 16px;border:1px solid rgba(67,230,220,.55);border-radius:16px;background:linear-gradient(145deg,rgba(24,39,76,.98),rgba(8,15,34,.98));box-shadow:0 0 28px rgba(50,220,210,.12);text-align:center;">
+      <div style="font:900 11px/1.4 Arial,sans-serif;letter-spacing:2.5px;color:#55e9df;margin-bottom:9px;">SHARE THIS ROOM CODE WITH YOUR FRIEND</div>
+      <div id="display-room-code" style="display:block!important;font:900 clamp(32px,9vw,48px)/1.15 Arial,sans-serif;letter-spacing:7px;color:#fff;text-shadow:0 0 18px rgba(64,231,220,.3);overflow-wrap:anywhere;">XXXXXXX</div>
+      <button id="copy-room-code-btn" type="button" class="trade-btn" style="margin-top:14px;background:#20cfc4;color:#071321;padding:12px 24px;font-size:14px;font-weight:900;border:0;border-radius:10px;" onclick="copyCurrentRoomCode()">COPY CODE</button>
+      <div style="font:11px/1.5 Arial,sans-serif;color:#aab8d0;margin-top:9px;">Your friend enters this code using JOIN BLITZ ROOM. Code expires after 2 minutes.</div>
+    </div>
     <button class="trade-btn" style="background:#ff4444; color:#fff; padding: 12px 30px; font-size: 16px;" onclick="cancelRoom()">CANCEL MATCH</button>
 
     <div style="position:absolute; bottom:40px; width:90%; max-width:400px; text-align:center;">
@@ -4224,6 +4231,7 @@ let selectedMpMode = 'ovr';
 let activeMpMode = 'ovr';
 let roomBrowserFilter = 'all';
 let pendingBlitzJoinCode = null;
+let blitzRoomExpiryTimer = null;
 let blitzPickerContext = null;
 let blitzPickerRole = 'GK';
 let blitzPickerSubmitting = false;
@@ -4338,7 +4346,8 @@ async function submitBlitzRoomCode() {
         openBlitzPicker('join');
     } catch (err) {
         console.error('BLITZ ROOM CODE LOOKUP:',err);
-        showToast('COULD NOT CHECK ROOM CODE — CHECK FIREBASE RULES','error');
+        const errorCode=String(err?.code||'').replace('database/','').toUpperCase();
+        showToast(errorCode==='PERMISSION_DENIED'?'FIREBASE DENIED ROOM READ — CHECK DATABASE RULES':('ROOM LOOKUP FAILED: '+(errorCode||'NETWORK ERROR')),'error');
     }
 }
 
@@ -4909,6 +4918,8 @@ async function createRoom() {
     rematchStarting = false;
 
     document.getElementById('display-room-code').innerText = code;
+    const blitzCodeWrap=document.getElementById('display-room-code-wrap');if(blitzCodeWrap)blitzCodeWrap.style.setProperty('display','none','important');
+    const roomHelp=document.getElementById('display-room-help');if(roomHelp)roomHelp.textContent='Your room is listed in BROWSE DRAFT ROOMS. Keep this screen open while another player joins.';
     document.getElementById('display-room-name').innerText = roomName;
     document.getElementById('display-room-privacy').innerText = selectedRoomPrivacy === 'private' ? 'PRIVATE ROOM · PASSWORD REQUIRED' : 'PUBLIC ROOM · OPEN TO ANY PLAYER';
     document.getElementById('mp-create-room-modal').style.display = 'none';
@@ -5117,6 +5128,42 @@ async function blitzServerNow(){
   }catch(_){ return Date.now(); }
 }
 
+function clearBlitzRoomExpiryTimer(){
+  if(blitzRoomExpiryTimer){clearTimeout(blitzRoomExpiryTimer);blitzRoomExpiryTimer=null;}
+}
+async function scheduleBlitzRoomExpiry(roomId,createdAt){
+  clearBlitzRoomExpiryTimer();
+  const runExpiry=async()=>{
+    if(!db)return;
+    try{
+      const serverNow=await blitzServerNow();
+      const ref=db.ref('matches/'+roomId);
+      const result=await ref.transaction(current=>{
+        if(!current || current.mode!=='blitz' || current.status!=='waiting') return;
+        const born=Number(current.createdAt)||0;
+        if(!born || serverNow-born<120000) return;
+        return null; // Delete only a still-waiting BLITZ room after its two-minute lifetime.
+      });
+      if(result.committed){
+        if(currentMatchId===roomId){
+          currentMatchId=null;stopFunFacts();
+          const waiting=document.getElementById('mp-waiting-screen');if(waiting)waiting.style.display='none';
+          showToast('BLITZ ROOM EXPIRED — CREATE A NEW ROOM','warning');
+        }
+      }else{
+        const snap=await ref.once('value');const latest=snap.val();
+        if(latest && latest.mode==='blitz' && latest.status==='waiting'){
+          const age=serverNow-(Number(latest.createdAt)||createdAt);
+          blitzRoomExpiryTimer=setTimeout(runExpiry,Math.max(500,120000-age+500));
+        }
+      }
+    }catch(err){console.warn('BLITZ AUTO-EXPIRY:',err);}
+  };
+  const serverNow=await blitzServerNow();
+  const delay=Math.max(500,Number(createdAt)+120000-serverNow+500);
+  blitzRoomExpiryTimer=setTimeout(runExpiry,delay);
+}
+
 async function cleanupStaleBlitzRooms(){
   if(!db) return;
   try{
@@ -5127,12 +5174,27 @@ async function cleanupStaleBlitzRooms(){
     Object.keys(all).forEach(id=>{
       const room=all[id]; if(!room) return;
       const status=String(room.status||'').toLowerCase();
-      const terminal=['closed','cancelled','canceled','suspended','expired'].includes(status);
-      const staleWaiting=room.mode==='blitz' && status==='waiting' && (!Number(room.createdAt) || now-Number(room.createdAt)>=2*60*1000);
+      const isBlitz=room.mode==='blitz';
+      const terminal=isBlitz && ['closed','cancelled','canceled','suspended','expired'].includes(status);
+      const staleWaiting=isBlitz && status==='waiting' && (!Number(room.createdAt) || now-Number(room.createdAt)>=2*60*1000);
       if(terminal || staleWaiting) removals.push(db.ref('matches/'+id).remove().catch(()=>{}));
     });
     if(removals.length) await Promise.all(removals);
   }catch(err){ console.warn('STALE ROOM CLEANUP:',err); }
+}
+
+async function copyCurrentRoomCode(){
+  const code=String(document.getElementById('display-room-code')?.innerText||'').trim();
+  if(!/^[A-Z0-9]{7}$/.test(code)){showToast('ROOM CODE NOT AVAILABLE','error');return;}
+  try{
+    if(navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(code);
+    else {
+      const temp=document.createElement('textarea');temp.value=code;temp.style.position='fixed';temp.style.opacity='0';document.body.appendChild(temp);temp.select();
+      const copied=document.execCommand('copy');temp.remove();if(!copied)throw new Error('Clipboard unavailable');
+    }
+    const btn=document.getElementById('copy-room-code-btn');if(btn){btn.textContent='COPIED!';setTimeout(()=>{if(btn.isConnected)btn.textContent='COPY CODE';},1600);}
+    showToast('ROOM CODE COPIED','success');
+  }catch(err){console.warn('ROOM CODE COPY:',err);showToast('COPY FAILED — PRESS AND HOLD THE CODE TO COPY','warning');}
 }
 
 async function createBlitzRoom(){
@@ -5157,12 +5219,19 @@ async function createBlitzRoom(){
     rematchFinished=false;rematchStarting=false;
     const waiting=document.getElementById('mp-waiting-screen');
     document.getElementById('display-room-code').innerText=code;
+    const codeWrap=document.getElementById('display-room-code-wrap');
+    if(codeWrap){codeWrap.hidden=false;codeWrap.style.setProperty('display','block','important');}
+    const codeText=document.getElementById('display-room-code');
+    if(codeText){codeText.textContent=code;codeText.style.setProperty('display','block','important');}
+    const copyBtn=document.getElementById('copy-room-code-btn');if(copyBtn)copyBtn.textContent='COPY CODE';
+    const roomHelp=document.getElementById('display-room-help');if(roomHelp)roomHelp.textContent='Send this 7-character code to your friend. They must choose VS PLAYER → JOIN BLITZ 4V4 ROOM (CODE).';
     document.getElementById('display-room-name').innerText='BLITZ 4V4';
     document.getElementById('display-room-privacy').innerText='PUBLIC BLITZ ROOM';
     document.getElementById('blitz-squad-modal').style.display='none';
     document.getElementById('mp-setup-modal').style.display='none';
     if(waiting)waiting.style.display='flex';
     startFunFacts();
+    scheduleBlitzRoomExpiry(code,now).catch(err=>console.warn('BLITZ EXPIRY SCHEDULE:',err));
     roomRef.onDisconnect().update({p1Online:false,p1LastDisconnectAt:firebase.database.ServerValue.TIMESTAMP}).catch(()=>{});
     listenForMatchStart(code);
     showToast('BLITZ ROOM CREATED — WAITING FOR OPPONENT','success');
@@ -5196,6 +5265,7 @@ function listenForMatchStart(matchId) {
         const data = snapshot.val();
         if (!data) return;
         if (data.mode === 'blitz' && data.player2 !== false && data.p1BlitzTeam && data.p2BlitzTeam && data.status === 'starting') {
+            clearBlitzRoomExpiryTimer();
             matchRef.off('value', connectionCheck);
             stopFunFacts();
             document.getElementById('mp-waiting-screen').style.display = 'none';
@@ -5224,6 +5294,7 @@ function listenForMatchStart(matchId) {
 }
 
 function cancelRoom() {
+    clearBlitzRoomExpiryTimer();
     if(currentMatchId && isPlayer1 && db) {
         const ref = db.ref('matches/' + currentMatchId);
         ref.onDisconnect().cancel().catch(() => {});
@@ -6909,44 +6980,59 @@ async function completeBlitzJoin(){
   const now=await blitzServerNow();
   const myUsername=document.getElementById('display-name')?.innerText||'PLAYER 2';
   try{
+    // Capture the exact reason the transaction callback declines the room.
+    // Firebase can rerun a transaction callback, so reset this on every pass.
+    let transactionRejectReason='';
     const result=await roomRef.transaction(current=>{
-      if(!current || current.mode!=='blitz' || current.status!=='waiting') return;
+      transactionRejectReason='';
+      if(!current){transactionRejectReason='ROOM DOES NOT EXIST';return;}
+      if(current.mode!=='blitz'){transactionRejectReason='THIS IS NOT A BLITZ ROOM';return;}
+      if(current.status!=='waiting'){transactionRejectReason='ROOM STATUS: '+String(current.status||'UNKNOWN').toUpperCase();return;}
       // Waiting BLITZ rooms are valid for two minutes from host creation.
-      // Use the stored host timestamp, not the joining device's clock offset.
-      const createdAt = Number(current.createdAt) || 0;
-      if(!createdAt || now - createdAt >= 2 * 60 * 1000) return;
-      if(current.player2 !== false && current.player2 !== null && current.player2 !== undefined && current.player2 !== '') return;
-      if(current.roomPrivacy && current.roomPrivacy!=='public') return;
+      const createdAt=Number(current.createdAt)||0;
+      if(!createdAt || now-createdAt>=120000){transactionRejectReason='ROOM EXPIRED AFTER 2 MINUTES';return;}
+      if(current.player2!==false && current.player2!==null && current.player2!==undefined && current.player2!==''){
+        transactionRejectReason='ROOM ALREADY HAS A SECOND PLAYER';return;
+      }
+      if(current.roomPrivacy && current.roomPrivacy!=='public'){transactionRejectReason='ROOM IS NOT PUBLIC';return;}
+      const p2Team=serializeBlitzSquad(blitzSquadSelection);
+      if(!Array.isArray(p2Team) || p2Team.length!==4 || p2Team.some(player=>!player)){
+        transactionRejectReason='YOUR FOUR PLAYER SQUAD IS INCOMPLETE';return;
+      }
       return {
         ...current,
         player2:playerId,
         p2Name:myUsername,
         p2Online:true,
-        p2BlitzTeam:serializeBlitzSquad(blitzSquadSelection),
+        p2BlitzTeam:p2Team,
         status:'starting',
         blitzStatus:'starting',
         joinedAt:now,
-        expiresAt:createdAt+2*60*1000
+        expiresAt:createdAt+120000
       };
     });
     if(!result.committed){
-      // Read the current record to distinguish a genuinely filled/closed room
-      // from a room that the database rules refused to update.
-      let latest=null;
-      try { const check=await roomRef.once('value'); latest=check.val(); } catch(readErr) { console.warn('BLITZ JOIN DIAGNOSTIC READ:',readErr); }
-      let reason='ROOM JOIN WAS REJECTED';
-      if(!latest) reason='ROOM DOES NOT EXIST';
-      else if(latest.mode!=='blitz') reason='THIS IS NOT A BLITZ ROOM';
-      else if(latest.status!=='waiting') reason='ROOM STATUS: '+String(latest.status||'UNKNOWN').toUpperCase();
-      else if(!Number(latest.createdAt) || now-Number(latest.createdAt)>=2*60*1000) reason='ROOM EXPIRED AFTER 2 MINUTES';
-      else if(latest.player2!==false && latest.player2!==null && latest.player2!==undefined && latest.player2!=='') reason='ROOM ALREADY HAS A SECOND PLAYER';
-      else if(latest.roomPrivacy && latest.roomPrivacy!=='public') reason='ROOM IS NOT PUBLIC';
-      console.warn('BLITZ JOIN TRANSACTION NOT COMMITTED:',{roomId,status:latest?.status,player2:latest?.player2,mode:latest?.mode,roomPrivacy:latest?.roomPrivacy});
-      showToast(reason+' — '+(latest?'REFRESH ROOMS':'CREATE A NEW ROOM'),'warning');
-      pendingBlitzJoinCode=null;
-      closeBlitzPickerSilently();
-      document.getElementById('join-game-modal').style.display='flex';
-      refreshRoomBrowser();
+      let latest=null, diagnosticReadFailed=false;
+      try { const check=await roomRef.once('value'); latest=check.val(); }
+      catch(readErr) { diagnosticReadFailed=true; console.warn('BLITZ JOIN DIAGNOSTIC READ:',readErr); }
+      let reason=transactionRejectReason||'ROOM JOIN TRANSACTION DID NOT COMMIT';
+      if(diagnosticReadFailed) reason='FIREBASE BLOCKED ROOM READ — CHECK DATABASE RULES';
+      else if(!transactionRejectReason && !latest) reason='ROOM DOES NOT EXIST';
+      else if(!transactionRejectReason && latest && latest.status!=='waiting') reason='ROOM STATUS: '+String(latest.status||'UNKNOWN').toUpperCase();
+      else if(!transactionRejectReason && latest && latest.player2!==false && latest.player2!==null && latest.player2!==undefined && latest.player2!=='') reason='ROOM ALREADY HAS A SECOND PLAYER';
+      console.warn('BLITZ JOIN TRANSACTION NOT COMMITTED:',{roomId,reason,latest,transactionRejectReason});
+      showToast(reason,'warning');
+      // Do not send BLITZ users to the ordinary Draft room browser: BLITZ rooms
+      // are intentionally hidden there. Keep the entered code available so the
+      // user can retry or correct it without losing the joining flow.
+      if(/EXPIRED|DOES NOT EXIST|ALREADY HAS A SECOND PLAYER|ROOM STATUS|NOT A BLITZ ROOM/.test(reason)){
+        const codeInput=document.getElementById('blitz-room-code-input');
+        if(codeInput)codeInput.value=roomId;
+        pendingBlitzJoinCode=null;
+        closeBlitzPickerSilently();
+        const codeModal=document.getElementById('blitz-join-code-modal');
+        if(codeModal)codeModal.style.display='flex';
+      }
       return false;
     }
     const joinedData=result.snapshot?.val ? result.snapshot.val() : null;
@@ -7089,6 +7175,7 @@ function blitzCreateInitialState(data) {
 }
 function startBlitzMatch(initialData) {
   if (!currentMatchId || !db) return;
+  clearBlitzRoomExpiryTimer();
   activeMpMode = 'blitz';
   document.getElementById('mp-waiting-screen').style.display = 'none';
   document.getElementById('mp-setup-modal').style.display = 'none';
@@ -7450,7 +7537,8 @@ function blitzAcceptPeerPacket(raw){
   }
 }
 async function blitzStartWebRTC(){
-  if(blitzPeerSetupStarted || !db || !currentMatchId || !window.RTCPeerConnection) return;
+  if(blitzPeerSetupStarted || !db || !currentMatchId) return;
+  if(!window.RTCPeerConnection){blitzSetPeerStatus('FIREBASE FALLBACK');blitzPeerReady=false;return;}
   blitzPeerSetupStarted=true; blitzPeerReady=false; blitzNetSnapshots=[]; blitzRemoteCandidateQueue=[];
   blitzSetPeerStatus('CONNECTING');
   const root=db.ref('matches/'+currentMatchId+'/blitzSignal');
@@ -7820,6 +7908,7 @@ function stopBlitzTimersOnly(){
   const c=document.getElementById('blitz-canvas');if(c){c.onmousemove=null;c.onclick=null;c.oncontextmenu=null;}
 }
 function stopBlitzMatch(removeRoom){
+  clearBlitzRoomExpiryTimer();
   stopBlitzTimersOnly();
   blitzCleanupWebRTC();
   if(db && currentMatchId && blitzListener){db.ref('matches/'+currentMatchId).off('value',blitzListener);blitzListener=null;}
