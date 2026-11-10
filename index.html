@@ -6854,7 +6854,18 @@ async function completeBlitzJoin(){
       };
     });
     if(!result.committed){
-      showToast('BLITZ ROOM FILLED OR EXPIRED — SELECT ANOTHER ROOM','warning');
+      // Read the current record to distinguish a genuinely filled/closed room
+      // from a room that the database rules refused to update.
+      let latest=null;
+      try { const check=await roomRef.once('value'); latest=check.val(); } catch(readErr) { console.warn('BLITZ JOIN DIAGNOSTIC READ:',readErr); }
+      let reason='ROOM JOIN WAS REJECTED';
+      if(!latest) reason='ROOM DOES NOT EXIST';
+      else if(latest.mode!=='blitz') reason='THIS IS NOT A BLITZ ROOM';
+      else if(latest.status!=='waiting') reason='ROOM STATUS: '+String(latest.status||'UNKNOWN').toUpperCase();
+      else if(latest.player2!==false && latest.player2!==null && latest.player2!==undefined && latest.player2!=='') reason='ROOM ALREADY HAS A SECOND PLAYER';
+      else if(latest.roomPrivacy && latest.roomPrivacy!=='public') reason='ROOM IS NOT PUBLIC';
+      console.warn('BLITZ JOIN TRANSACTION NOT COMMITTED:',{roomId,status:latest?.status,player2:latest?.player2,mode:latest?.mode,roomPrivacy:latest?.roomPrivacy});
+      showToast(reason+' — '+(latest?'REFRESH ROOMS':'CREATE A NEW ROOM'),'warning');
       pendingBlitzJoinCode=null;
       closeBlitzPickerSilently();
       document.getElementById('join-game-modal').style.display='flex';
@@ -6878,7 +6889,10 @@ async function completeBlitzJoin(){
     document.getElementById('join-game-modal').style.display='none';
     document.getElementById('mp-setup-modal').style.display='none';
     document.getElementById('mp-waiting-screen').style.display='none';
-    roomRef.onDisconnect().update({status:'closed',p2Online:false,closedAt:firebase.database.ServerValue.TIMESTAMP}).catch(err=>console.warn('BLITZ PLAYER DISCONNECT SETUP:',err));
+    // A temporary mobile-browser suspension or network drop must NOT close
+    // the entire match. Only mark player 2 offline; the host/room remains valid
+    // so the player can reconnect and restore presence through .info/connected.
+    roomRef.onDisconnect().update({p2Online:false,p2LastDisconnectAt:firebase.database.ServerValue.TIMESTAMP}).catch(err=>console.warn('BLITZ PLAYER DISCONNECT SETUP:',err));
     startBlitzMatch(joinedData);
     showToast('BLITZ ROOM JOINED — MATCH STARTING','success');
     return true;
