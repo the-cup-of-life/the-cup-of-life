@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<!-- TCOL multiplayer patch: 2.4 | BLITZ join reservation prevents room expiry during squad selection -->
+<!-- TCOL multiplayer patch: 2.5 | non-destructive room browser and extended BLITZ join reservation -->
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>THE CUP OF LIFE · BUILD 2.4</title>
-<meta name="tcol-build" content="2.4-blitz-join-reservation">
+<meta name="tcol-build" content="2.5-blitz-room-retention">
 <meta name="description" content="FOOTBALL GAME, BY BALLERS, FOR BALLERS. THE CUP OF LIFE is a football experience built around player collection, card packs, FUT Draft, squad building, club progression, achievements, competitive match simulations, and challenges against AI opponents or other players online.">
 <meta name="application-name" content="THE CUP OF LIFE">
 <meta name="theme-color" content="#0a0e1a">
@@ -2181,7 +2181,7 @@ body{overflow-x:hidden}
       <div style="font:900 11px/1.4 Arial,sans-serif;letter-spacing:2.5px;color:#55e9df;margin-bottom:9px;">SHARE THIS ROOM CODE WITH YOUR FRIEND</div>
       <div id="display-room-code" style="display:block!important;font:900 clamp(32px,9vw,48px)/1.15 Arial,sans-serif;letter-spacing:7px;color:#fff;text-shadow:0 0 18px rgba(64,231,220,.3);overflow-wrap:anywhere;">XXXXXXX</div>
       <button id="copy-room-code-btn" type="button" class="trade-btn" style="margin-top:14px;background:#20cfc4;color:#071321;padding:12px 24px;font-size:14px;font-weight:900;border:0;border-radius:10px;" onclick="copyCurrentRoomCode()">COPY CODE</button>
-      <div style="font:11px/1.5 Arial,sans-serif;color:#aab8d0;margin-top:9px;">Your friend enters this code using JOIN BLITZ ROOM. Code expires after 2 minutes.</div>
+      <div style="font:11px/1.5 Arial,sans-serif;color:#aab8d0;margin-top:9px;">Your friend must enter this code within 2 minutes. After the code is accepted, their squad selection is reserved for 5 minutes.</div>
     </div>
     <button class="trade-btn" style="background:#ff4444; color:#fff; padding: 12px 30px; font-size: 16px;" onclick="cancelRoom()">CANCEL MATCH</button>
 
@@ -4232,6 +4232,9 @@ let activeMpMode = 'ovr';
 let roomBrowserFilter = 'all';
 let pendingBlitzJoinCode = null;
 let pendingBlitzJoinToken = null;
+// Unclaimed room codes expire after 2 minutes; once a guest reserves the slot,
+// allow up to 5 minutes for mobile squad selection to finish.
+const BLITZ_JOIN_RESERVATION_MS = 5 * 60 * 1000;
 let blitzRoomExpiryTimer = null;
 let blitzPickerContext = null;
 let blitzPickerRole = 'GK';
@@ -4353,7 +4356,7 @@ async function submitBlitzRoomCode() {
             if (current.player2 !== false && current.player2 !== null && current.player2 !== undefined && current.player2 !== '') { reserveReason = 'ROOM ALREADY HAS A SECOND PLAYER'; return; }
             const lockUntil = Number(current.p2JoinPendingUntil) || 0;
             if (current.p2JoinPending && lockUntil > serverNow) { reserveReason = 'ANOTHER PLAYER IS ALREADY JOINING THIS ROOM'; return; }
-            return { ...current, p2JoinPending:token, p2JoinPendingAt:serverNow, p2JoinPendingUntil:serverNow + 120000 };
+            return { ...current, p2JoinPending:token, p2JoinPendingAt:serverNow, p2JoinPendingUntil:serverNow + BLITZ_JOIN_RESERVATION_MS };
         });
         if (!reserve.committed) { showToast(reserveReason || 'COULD NOT RESERVE THIS ROOM — REFRESH AND TRY AGAIN','warning'); return; }
         pendingBlitzJoinCode = code;
@@ -4752,13 +4755,14 @@ function refreshRoomBrowser() {
             const room = all[id];
             if (!room) return;
             const isTerminal = ['closed','cancelled','canceled','suspended','expired'].includes(String(room.status || '').toLowerCase());
-            const createdAt = Number(room.createdAt) || 0;
-            const blitzExpired = room.mode === 'blitz' && room.status === 'waiting' && (!createdAt || now - createdAt >= 2 * 60 * 1000);
-            if (isTerminal || blitzExpired) {
+            // The room browser must NEVER delete BLITZ rooms. It is only a view;
+            // deletion is owned by the guarded server-time expiry transaction,
+            // which checks for an active p2JoinPending reservation first.
+            if (room.mode === 'blitz') return; // BLITZ joins only through the room-code flow.
+            if (isTerminal) {
                 db.ref('matches/' + id).remove().catch(() => {});
                 return;
             }
-            if (room.mode === 'blitz') return; // BLITZ joins only through the room-code flow.
             if (room.status !== 'waiting' || (room.player2 !== false && room.player2 !== null && room.player2 !== undefined && room.player2 !== '')) return;
             if (!['ovr','matchtime','onesim'].includes(room.mode)) return;
             if (!['public','private'].includes(room.roomPrivacy) || !room.roomName) return;
