@@ -1563,6 +1563,7 @@ body{overflow-x:hidden}
 .tcol-achievements-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.tcol-achievement-card{position:relative;display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:11px;align-items:start;padding:14px;border:1px solid #ffffff18;border-radius:12px;background:linear-gradient(140deg,#11251b,#0b1712 75%);box-shadow:0 7px 20px #0003;min-width:0}.tcol-achievement-card.is-unlocked{border-color:#baff695c;background:linear-gradient(140deg,#1c3823,#0d1b13 76%)}.tcol-achievement-icon{display:grid;place-items:center;width:42px;height:42px;border-radius:10px;background:#ffffff0b;border:1px solid #ffffff1c;font-size:21px}.tcol-achievement-card.is-unlocked .tcol-achievement-icon{background:#baff6918;border-color:#baff6966}.tcol-achievement-main{min-width:0}.tcol-achievement-category{font-size:8px;letter-spacing:1.1px;color:#91b29d;font-weight:1000}.tcol-achievement-name{margin:4px 0 3px;font-size:13px;line-height:1.2;font-weight:1000;color:#f5fff7}.tcol-achievement-desc{font-size:10px;line-height:1.45;color:#a8bdb0}.tcol-achievement-progress-label{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-size:9px;color:#c3d3c7;font-weight:900}.tcol-achievement-bar{height:4px;background:#ffffff16;border-radius:99px;overflow:hidden;margin-top:5px}.tcol-achievement-bar>span{display:block;height:100%;width:0;background:#81dca1;border-radius:99px}.tcol-achievement-card.is-unlocked .tcol-achievement-bar>span{background:#baff69}.tcol-achievement-status{font-size:8px;font-weight:1000;letter-spacing:.6px;color:#859a8c;border:1px solid #ffffff20;border-radius:5px;padding:5px 6px;white-space:nowrap}.tcol-achievement-card.is-unlocked .tcol-achievement-status{color:#caff78;border-color:#baff6955;background:#baff6910}
 @media(max-width:650px){#achievements-ui{padding:12px 10px 60px}.tcol-achievements-top{grid-template-columns:auto 1fr auto;gap:8px}.tcol-achievements-top>.home-btn{font-size:9px;padding:9px 8px}.tcol-achievements-kicker{font-size:7px}.tcol-achievements-heading h1{font-size:22px}.tcol-achievements-sub{font-size:7px;letter-spacing:.6px}.tcol-achievements-count{min-width:58px;padding:7px 7px}.tcol-achievements-count strong{font-size:18px}.tcol-achievements-count span{font-size:7px}.tcol-achievements-filters{gap:5px}.tcol-achievements-filters button{padding:8px 9px;font-size:8px}.tcol-achievements-grid{grid-template-columns:1fr;gap:8px}.tcol-achievement-card{grid-template-columns:38px minmax(0,1fr) auto;padding:11px;gap:9px}.tcol-achievement-icon{width:36px;height:36px;font-size:18px}.tcol-achievement-name{font-size:12px}.tcol-achievement-desc{font-size:9px}}
 </style>
+<meta name="tcol-build" content="2.6-blitz-tombstone-room-lifecycle" />
 </head>
 <body>
 
@@ -4332,7 +4333,9 @@ async function submitBlitzRoomCode() {
         const roomRef = db.ref('matches/' + code);
         const snap = await roomRef.once('value');
         const room = snap.val();
-        if (!room || room.mode !== 'blitz') { showToast('BLITZ ROOM CODE NOT FOUND','error'); return; }
+        if (!room) { showToast('ROOM RECORD IS MISSING — IT MAY HAVE BEEN REMOVED OR THE CODE IS WRONG','error'); return; }
+        if (room.mode !== 'blitz') { showToast('THIS CODE DOES NOT BELONG TO A BLITZ ROOM','error'); return; }
+        if (room.status === 'expired' || room.status === 'closed') { showToast('THIS ROOM HAS EXPIRED OR WAS CLOSED — ASK THE HOST TO CREATE A NEW CODE','error'); return; }
         const serverNow = await blitzServerNow();
         const created = Number(room.createdAt) || 0;
         if (room.status !== 'waiting' || (room.player2 !== false && room.player2 !== null && room.player2 !== undefined && room.player2 !== '')) {
@@ -5179,7 +5182,12 @@ async function scheduleBlitzRoomExpiry(roomId,createdAt){
         const pendingUntil=Number(current.p2JoinPendingUntil)||0;
         if(current.p2JoinPending && pendingUntil>serverNow){ activeJoinUntil=pendingUntil; return; }
         if(!born || serverNow-born<120000) return;
-        return null;
+        // Keep an expired-room tombstone instead of deleting the Firebase node.
+        // This makes a room vanish impossible to confuse with a failed lookup,
+        // and preserves diagnostics when another client races the expiry check.
+        const expired={...current,status:'expired',blitzStatus:'expired',expiredAt:serverNow};
+        delete expired.p2JoinPending; delete expired.p2JoinPendingAt; delete expired.p2JoinPendingUntil;
+        return expired;
       });
       if(result.committed){
         if(currentMatchId===roomId){
@@ -5212,10 +5220,16 @@ async function cleanupStaleBlitzRooms(){
     const removals=Object.keys(all).map(id=>db.ref('matches/'+id).transaction(current=>{
       if(!current || current.mode!=='blitz') return;
       const status=String(current.status||'').toLowerCase();
-      const terminal=['closed','cancelled','canceled','suspended','expired'].includes(status);
+      // BLITZ records are never physically deleted by background cleanup.
+      // Terminal records remain as short-lived diagnostic tombstones; only stale
+      // unreserved waiting rooms are marked expired. Active reservations survive.
       const activeJoinReservation=!!current.p2JoinPending && Number(current.p2JoinPendingUntil)>now;
       const staleWaiting=status==='waiting' && !activeJoinReservation && (!Number(current.createdAt) || now-Number(current.createdAt)>=120000);
-      if(terminal || staleWaiting) return null;
+      if(staleWaiting){
+        const expired={...current,status:'expired',blitzStatus:'expired',expiredAt:now};
+        delete expired.p2JoinPending; delete expired.p2JoinPendingAt; delete expired.p2JoinPendingUntil;
+        return expired;
+      }
     }).catch(err=>console.warn('BLITZ ROOM CLEANUP ITEM:',id,err)));
     await Promise.all(removals);
   }catch(err){ console.warn('STALE ROOM CLEANUP:',err); }
